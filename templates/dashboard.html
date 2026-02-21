@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sunday Voice Assistant - Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+        
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+        
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+        
+        .stat-label {
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        .commands-section {
+            background: white;
+            border-radius: 10px;
+            padding: 25px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .section-title {
+            font-size: 1.5em;
+            color: #333;
+        }
+        
+        .refresh-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: background 0.3s;
+        }
+        
+        .refresh-btn:hover {
+            background: #5568d3;
+        }
+        
+        .command-list {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        
+        .command-item {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            border-radius: 5px;
+            padding: 15px;
+            animation: slideIn 0.3s ease-out;
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        
+        .command-item.success {
+            border-left-color: #28a745;
+        }
+        
+        .command-item.failed {
+            border-left-color: #dc3545;
+        }
+        
+        .command-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        
+        .command-text {
+            font-size: 1.1em;
+            font-weight: 500;
+            color: #333;
+        }
+        
+        .command-time {
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        .command-details {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+        
+        .detail-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 500;
+        }
+        
+        .badge-local {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .badge-cloud {
+            background: #d1ecf1;
+            color: #0c5460;
+        }
+        
+        .badge-success {
+            background: #d4edda;
+            color: #155724;
+        }
+        
+        .badge-failed {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        
+        .masked-text {
+            color: #666;
+            font-size: 0.9em;
+            font-style: italic;
+            margin-top: 5px;
+        }
+        
+        .no-commands {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        
+        .pulse {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background: #28a745;
+            border-radius: 50%;
+            margin-right: 5px;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.3;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>☀️ Sunday Voice Assistant</h1>
+            <p class="subtitle">Privacy-First Smart Home Control Dashboard</p>
+        </header>
+        
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-value" id="totalCommands">0</div>
+                <div class="stat-label">Total Commands</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="localCommands">0</div>
+                <div class="stat-label">Local Processing</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="cloudCommands">0</div>
+                <div class="stat-label">Cloud Processing</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="successRate">0%</div>
+                <div class="stat-label">Success Rate</div>
+            </div>
+        </div>
+        
+        <div class="commands-section">
+            <div class="section-header">
+                <h2 class="section-title">
+                    <span class="pulse"></span>
+                    Recent Commands
+                </h2>
+                <button class="refresh-btn" onclick="fetchLogs()">Refresh</button>
+            </div>
+            
+            <div class="command-list" id="commandList">
+                <div class="no-commands">
+                    Waiting for voice commands...
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let lastLogCount = 0;
+        
+        async function fetchLogs() {
+            try {
+                const response = await fetch('/api/logs');
+                const logs = await response.json();
+                
+                updateStats(logs);
+                displayCommands(logs);
+                
+                lastLogCount = logs.length;
+            } catch (error) {
+                console.error('Error fetching logs:', error);
+            }
+        }
+        
+        function updateStats(logs) {
+            const total = logs.length;
+            const local = logs.filter(l => l.route === 'LOCAL').length;
+            const cloud = logs.filter(l => l.route === 'CLOUD').length;
+            const successful = logs.filter(l => l.success).length;
+            const successRate = total > 0 ? Math.round((successful / total) * 100) : 0;
+            
+            document.getElementById('totalCommands').textContent = total;
+            document.getElementById('localCommands').textContent = local;
+            document.getElementById('cloudCommands').textContent = cloud;
+            document.getElementById('successRate').textContent = successRate + '%';
+        }
+        
+        function displayCommands(logs) {
+            const commandList = document.getElementById('commandList');
+            
+            if (logs.length === 0) {
+                commandList.innerHTML = '<div class="no-commands">Waiting for voice commands...</div>';
+                return;
+            }
+            
+            // Reverse to show newest first
+            const reversedLogs = [...logs].reverse();
+            
+            commandList.innerHTML = reversedLogs.map(log => `
+                <div class="command-item ${log.success ? 'success' : 'failed'}">
+                    <div class="command-header">
+                        <div class="command-text">"${log.original}"</div>
+                        <div class="command-time">${log.timestamp}</div>
+                    </div>
+                    <div class="command-details">
+                        <span class="detail-badge ${log.route === 'LOCAL' ? 'badge-local' : 'badge-cloud'}">
+                            ${log.route}
+                        </span>
+                        <span class="detail-badge ${log.success ? 'badge-success' : 'badge-failed'}">
+                            ${log.success ? '✓ Success' : '✗ Failed'}
+                        </span>
+                    </div>
+                    ${log.masked ? `<div class="masked-text">Privacy masked: "${log.masked}"</div>` : ''}
+                </div>
+            `).join('');
+        }
+        
+        // Auto-refresh every 2 seconds
+        setInterval(fetchLogs, 2000);
+        
+        // Initial load
+        fetchLogs();
+    </script>
+</body>
+</html>

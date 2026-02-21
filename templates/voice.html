@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>🎤 Voice Control</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%);
+            color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            text-align: center;
+            max-width: 600px;
+        }
+        h1 {
+            font-size: 3em;
+            margin-bottom: 20px;
+            background: linear-gradient(45deg, #00ff88, #00ccff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .mic-button {
+            width: 200px;
+            height: 200px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #00ff88, #00ccff);
+            border: none;
+            font-size: 80px;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin: 40px auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .mic-button:hover {
+            transform: scale(1.1);
+            box-shadow: 0 0 40px rgba(0,255,136,0.5);
+        }
+        .mic-button.listening {
+            animation: pulse 1s infinite;
+            background: linear-gradient(135deg, #ff6b6b, #ff8888);
+        }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 15px;
+            background: rgba(255,255,255,0.1);
+            border: 2px solid rgba(255,255,255,0.2);
+            border-radius: 10px;
+            color: #fff;
+            font-size: 1.2em;
+            margin: 20px 0;
+        }
+        .status {
+            margin-top: 30px;
+            padding: 20px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 10px;
+            min-height: 100px;
+        }
+        .examples {
+            margin-top: 40px;
+            text-align: left;
+        }
+        .example-btn {
+            display: block;
+            width: 100%;
+            padding: 15px;
+            margin: 10px 0;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            color: #fff;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .example-btn:hover {
+            background: rgba(255,255,255,0.2);
+            transform: translateX(10px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎤 Voice Assistant</h1>
+        <p style="color: #888; margin-bottom: 20px;">Privacy-First Smart Home Control</p>
+        
+        <button class="mic-button" id="micBtn" onclick="toggleListening()">🎤</button>
+        
+        <input type="text" id="commandInput" placeholder="Or type a command..." 
+               onkeypress="handleEnter(event)">
+        
+        <div class="status" id="status">
+            <p style="color: #888;">Ready to listen...</p>
+        </div>
+        
+        <div class="examples">
+            <h3>Try these commands:</h3>
+            <button class="example-btn" onclick="sendExample(this.textContent)">
+                Turn on the kitchen lights
+            </button>
+            <button class="example-btn" onclick="sendExample(this.textContent)">
+                Turn on bedroom lights where Sarah is sleeping
+            </button>
+            <button class="example-btn" onclick="sendExample(this.textContent)">
+                Activate movie mode in the living room
+            </button>
+        </div>
+        
+        <p style="margin-top: 30px; color: #666;">
+            Open <a href="http://localhost:5000" target="_blank" style="color: #00ff88;">Dashboard</a> 
+            to see privacy protection in action
+        </p>
+    </div>
+
+    <script>
+        let isListening = false;
+
+        function toggleListening() {
+            const btn = document.getElementById('micBtn');
+            const status = document.getElementById('status');
+            
+            if (!isListening) {
+                isListening = true;
+                btn.classList.add('listening');
+                btn.textContent = '🔴';
+                status.innerHTML = '<p style="color: #ff6b6b;">🎤 Listening... (type your command)</p>';
+                document.getElementById('commandInput').focus();
+            } else {
+                processCommand();
+            }
+        }
+
+        function handleEnter(event) {
+            if (event.key === 'Enter') {
+                processCommand();
+            }
+        }
+
+        function sendExample(text) {
+            document.getElementById('commandInput').value = text;
+            processCommand();
+        }
+
+        function processCommand() {
+            const input = document.getElementById('commandInput');
+            const text = input.value.trim();
+            const btn = document.getElementById('micBtn');
+            const status = document.getElementById('status');
+            
+            if (!text) return;
+            
+            status.innerHTML = '<p style="color: #ffaa00;">⚙️ Processing...</p>';
+            
+            fetch('/api/process_voice', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            })
+            .then(r => r.json())
+            .then(data => {
+                const routeColor = data.route === 'LOCAL' ? '#00ff88' : '#ffaa00';
+                status.innerHTML = `
+                    <p style="color: ${routeColor}; font-size: 1.2em;">✓ ${data.route}</p>
+                    <p style="color: #888; margin-top: 10px;">"${text}"</p>
+                `;
+                input.value = '';
+                isListening = false;
+                btn.classList.remove('listening');
+                btn.textContent = '🎤';
+            })
+            .catch(err => {
+                status.innerHTML = '<p style="color: #ff6b6b;">❌ Error processing command</p>';
+                isListening = false;
+                btn.classList.remove('listening');
+                btn.textContent = '🎤';
+            });
+        }
+    </script>
+</body>
+</html>
