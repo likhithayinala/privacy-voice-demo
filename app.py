@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 from google import genai
 import json as json_module
+from routines import detect_routine, get_routine, log_routine_usage, get_routine_context
 
 load_dotenv()
 
@@ -195,6 +196,50 @@ def process_command():
     data = request.json
     original_text = data.get('text', '')
     
+    # Check if this is a routine trigger first
+    routine_key = detect_routine(original_text)
+    if routine_key:
+        routine = get_routine(routine_key)
+        results = []
+        all_success = True
+        for action in routine["actions"]:
+            result = call_home_assistant(action["service"], action["entity_id"])
+            results.append({
+                "label": action["label"],
+                "success": result is not None
+            })
+            if result is None:
+                all_success = False
+        
+        # Log usage for pattern learning
+        log_routine_usage(routine_key)
+        context = get_routine_context(routine_key)
+        
+        # Log for dashboard
+        log_entry = {
+            'timestamp': datetime.now().strftime('%H:%M:%S'),
+            'original': original_text,
+            'masked': None,
+            'route': 'LOCAL (ROUTINE)',
+            'success': all_success
+        }
+        command_log.append(log_entry)
+        if len(command_log) > 10:
+            command_log.pop(0)
+        
+        return jsonify({
+            'success': all_success,
+            'route': 'LOCAL (ROUTINE)',
+            'result': f"Executed {routine['short_name']}",
+            'routine': routine_key,
+            'routine_summary': routine['summary'],
+            'routine_actions': results,
+            'routine_context': context,
+            'room': 'multiple',
+            'action': routine['short_name'],
+            'device': 'multiple'
+        })
+    
     # Check if this is a state query
     if is_state_query(original_text):
         # Extract room and get state
@@ -281,6 +326,22 @@ def process_command():
         'action': parsed.get('action'),
         'device': parsed.get('device')
     })
+
+# Routine info endpoint for dashboard
+@app.route('/api/routines')
+def get_routines():
+    from routines import ROUTINES, get_routine_context
+    routine_list = []
+    for key, routine in ROUTINES.items():
+        ctx = get_routine_context(key)
+        routine_list.append({
+            'key': key,
+            'name': routine['short_name'],
+            'triggers': routine['triggers'][:3],  # first 3 triggers
+            'action_count': len(routine['actions']),
+            'context': ctx
+        })
+    return jsonify(routine_list)
 
 # Dashboard endpoints
 @app.route('/')

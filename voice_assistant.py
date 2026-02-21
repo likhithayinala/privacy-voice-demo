@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 from dotenv import load_dotenv
 from io import BytesIO
 from app import mask_sensitive_data
+from routines import detect_routine, get_routine_context
 
 load_dotenv()
 
@@ -387,11 +388,51 @@ class VoiceAssistant:
         masked_input, original_rooms = mask_sensitive_data(user_input)
         masked_command_result = None
         if command_result:
-            # Mask room/device info in command_result too
             masked_command_result = dict(command_result)
             if masked_command_result.get('room'):
                 masked_command_result['room'] = '[ROOM]'
         
+        # Check if this was a routine execution
+        if command_result and command_result.get('routine'):
+            routine_key = command_result['routine']
+            routine_summary = command_result.get('routine_summary', '')
+            routine_actions = command_result.get('routine_actions', [])
+            routine_context = command_result.get('routine_context')
+            
+            # Build a context-aware prompt
+            context_hint = ""
+            if routine_context and routine_context.get('times_used', 0) > 1:
+                context_hint = f"""
+The user has triggered this routine {routine_context['times_used']} times before, 
+usually around {routine_context['usual_time']}. 
+Make your response feel personalized — mention that you remember their pattern, 
+e.g., 'like you usually do around this time' or 'your usual routine'."""
+            
+            action_labels = [a['label'] for a in routine_actions if a.get('success')]
+            
+            prompt = f"""You are Sunday, a friendly, proactive smart home voice assistant.
+Your responses should be brief, warm, and conversational (1-2 sentences max).
+The user said: "{masked_input}"
+
+You executed their routine which performed these actions: {', '.join(action_labels)}.
+{context_hint}
+
+Generate a brief, warm confirmation. Don't list every action mechanically — 
+summarize naturally. Sound like a thoughtful assistant who knows their habits.
+Use [ROOM] as a placeholder for room names if needed."""
+
+            try:
+                response = client.models.generate_content(
+                    model="gemini-3-flash-preview",
+                    contents=prompt
+                )
+                return self.unmask_sensitive_data(response.text, original_rooms)
+            except Exception as e:
+                print(f"Gemini API Exception: {e}")
+                # Fall back to the pre-built summary
+                return routine_summary
+        
+        # Non-routine: existing logic
         if command_result:
             prompt = f"""You are Sunday, a friendly and helpful smart home voice assistant. 
 Your responses should be brief, warm, and conversational (1-2 sentences max).
@@ -414,7 +455,6 @@ Use [ROOM] as a placeholder for room names if needed."""
                 model="gemini-3-flash-preview",
                 contents=prompt
             )
-            # Unmask the response before returning for TTS
             return self.unmask_sensitive_data(response.text, original_rooms)
         except Exception as e:
             print(f"Gemini API Exception: {e}")
