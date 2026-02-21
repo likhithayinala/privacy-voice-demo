@@ -12,6 +12,7 @@ from google import genai
 from urllib.parse import urlencode
 from dotenv import load_dotenv
 from io import BytesIO
+from app import mask_sensitive_data
 
 load_dotenv()
 
@@ -366,31 +367,55 @@ class VoiceAssistant:
             
         return False
 
+    def unmask_sensitive_data(self, text, original_rooms):
+        """Replace [ROOM] placeholders back with original room names"""
+        unmasked = text
+        for room in original_rooms:
+            # Replace one [ROOM] at a time with the corresponding original room
+            unmasked = unmasked.replace('[ROOM]', room, 1)
+        # If any [ROOM] tokens remain (e.g., Gemini echoed extras), replace with generic
+        unmasked = unmasked.replace('[ROOM]', 'room')
+        # Clean up other placeholder artifacts Gemini might echo back
+        unmasked = unmasked.replace('[PERSON]', 'someone')
+        unmasked = unmasked.replace('[TIME]', 'the scheduled time')
+        return unmasked
+
     def generate_response(self, user_input, command_result=None):
         """Generate conversational response using Gemini"""
+        
+        # Mask sensitive data before sending to Gemini
+        masked_input, original_rooms = mask_sensitive_data(user_input)
+        masked_command_result = None
+        if command_result:
+            # Mask room/device info in command_result too
+            masked_command_result = dict(command_result)
+            if masked_command_result.get('room'):
+                masked_command_result['room'] = '[ROOM]'
         
         if command_result:
             prompt = f"""You are Sunday, a friendly and helpful smart home voice assistant. 
 Your responses should be brief, warm, and conversational (1-2 sentences max).
-The user said: "{user_input}"
-The command was processed with result: {json.dumps(command_result)}
+The user said: "{masked_input}"
+The command was processed with result: {json.dumps(masked_command_result)}
 
 Generate a brief, friendly confirmation response. Don't mention technical details like "entity_id" or "service".
-Just confirm what you did in natural language."""
+Just confirm what you did in natural language. Use [ROOM] as a placeholder for room names if needed."""
         else:
             prompt = f"""You are Sunday, a friendly and helpful smart home voice assistant.
 Your responses should be brief, warm, and conversational (1-2 sentences max).
-The user said: "{user_input}"
+The user said: "{masked_input}"
 
 If this seems like a greeting or casual conversation, respond warmly.
-If it's a command you can't process, apologize briefly and ask them to try again."""
+If it's a command you can't process, apologize briefly and ask them to try again.
+Use [ROOM] as a placeholder for room names if needed."""
 
         try:
             response = client.models.generate_content(
                 model="gemini-3-flash-preview",
                 contents=prompt
             )
-            return response.text
+            # Unmask the response before returning for TTS
+            return self.unmask_sensitive_data(response.text, original_rooms)
         except Exception as e:
             print(f"Gemini API Exception: {e}")
             return "I'm having trouble connecting right now."
