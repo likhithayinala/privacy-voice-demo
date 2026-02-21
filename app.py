@@ -483,5 +483,136 @@ def dashboard():
 def get_logs():
     return jsonify(command_log)
 
+@app.route('/process_command', methods=['POST'])
+def process_command():
+    data = request.json
+    original_text = data.get('text', '')
+
+    # Check for routine match first
+    routine_key = detect_routine(original_text)
+    if routine_key:
+        routine = get_routine(routine_key)
+        if routine:
+            results = []
+            for action in routine.get('actions', []):
+                entity_id = action.get('entity_id')
+                service = action.get('service')
+                if entity_id and service:
+                    ha_result = call_home_assistant(service, entity_id)
+                    results.append({
+                        'entity_id': entity_id,
+                        'service': service,
+                        'label': action.get('label', ''),
+                        'success': ha_result is not None
+                    })
+
+            log_routine_usage(routine_key)
+            routine_context = get_routine_context(routine_key)
+
+            log_entry = {
+                'timestamp': datetime.now().strftime('%H:%M:%S'),
+                'original': original_text,
+                'masked': None,
+                'route': 'ROUTINE',
+                'success': True
+            }
+            command_log.append(log_entry)
+            if len(command_log) > 10:
+                command_log.pop(0)
+
+            return jsonify({
+                'success': True,
+                'route': 'ROUTINE',
+                'routine': routine_key,
+                'routine_summary': routine.get('summary', ''),
+                'routine_actions': results,
+                'routine_context': routine_context
+            })
+
+    # Check if this is a state query
+    if is_state_query(original_text):
+        text_lower = original_text.lower()
+        entity = None
+        room = None
+
+        if 'kitchen' in text_lower:
+            entity = 'input_boolean.kitchen_light'
+            room = 'kitchen'
+        elif 'bedroom' in text_lower:
+            entity = 'input_boolean.bedroom_light'
+            room = 'bedroom'
+        elif 'living' in text_lower:
+            entity = 'input_boolean.living_room_light'
+            room = 'living room'
+
+        if entity:
+            state = get_device_state(entity)
+            return jsonify({
+                'success': True,
+                'route': 'LOCAL',
+                'result': 'State query',
+                'room': room,
+                'action': 'query',
+                'device': 'light',
+                'state': state.get('state') if state else 'unknown'
+            })
+
+    # Apply privacy masking
+    masked_text, rooms = mask_sensitive_data(original_text)
+
+    # Decide routing
+    is_local = should_process_locally(original_text)
+    route = 'LOCAL' if is_local else 'CLOUD'
+
+    # Process command
+    if is_local:
+        parsed = parse_local_command(original_text)
+
+        if isinstance(parsed.get('entity_id'), list):
+            ha_response = True
+            for eid in parsed['entity_id']:
+                result = call_home_assistant(parsed['service'], eid)
+                if not result:
+                    ha_response = False
+        else:
+            ha_response = call_home_assistant(parsed['service'], parsed.get('entity_id'))
+
+        result_text = f"Executed {parsed['service']} locally"
+    else:
+        parsed = call_gemini_api(masked_text)
+        if parsed:
+            ha_response = call_home_assistant(
+                parsed.get('service'),
+                parsed.get('entity_id'),
+                parsed.get('data')
+            )
+            result_text = f"Executed via Gemini: {parsed.get('service')}"
+        else:
+            result_text = "Failed to parse command"
+            ha_response = None
+            parsed = {}
+
+    # Log for dashboard
+    log_entry = {
+        'timestamp': datetime.now().strftime('%H:%M:%S'),
+        'original': original_text,
+        'masked': masked_text if not is_local else None,
+        'route': route,
+        'success': ha_response is not None
+    }
+    command_log.append(log_entry)
+    if len(command_log) > 10:
+        command_log.pop(0)
+
+    return jsonify({
+        'success': ha_response is not None,
+        'route': route,
+        'result': result_text,
+        'room': parsed.get('room'),
+        'action': parsed.get('action'),
+        'device': parsed.get('device')
+    })
+
+
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
