@@ -199,8 +199,43 @@ KNOWN_ENTITIES = {
     "office light": "input_boolean.office_light"
 }
 
+def unmask_routine_data(parsed, original_rooms):
+    """Unmask [ROOM] placeholders back to original room names in routine data."""
+    import copy
+    result = copy.deepcopy(parsed)
+    
+    def unmask_text(text, rooms):
+        for room in rooms:
+            text = text.replace('[ROOM]', room, 1)
+        text = text.replace('[ROOM]', 'room')
+        text = text.replace('[PERSON]', 'someone')
+        text = text.replace('[TIME]', 'the scheduled time')
+        return text
+    
+    # Unmask triggers
+    result['triggers'] = [unmask_text(t, original_rooms) for t in result.get('triggers', [])]
+    
+    # Unmask summary
+    if 'summary' in result:
+        result['summary'] = unmask_text(result['summary'], original_rooms)
+    
+    # Unmask short_name
+    if 'short_name' in result:
+        result['short_name'] = unmask_text(result['short_name'], original_rooms)
+    
+    # Unmask action labels
+    for action in result.get('actions', []):
+        if 'label' in action:
+            action['label'] = unmask_text(action['label'], original_rooms)
+    
+    return result
+
+
 def parse_routine_with_gemini(text):
     """Use Gemini to parse a natural language routine description into structured data."""
+    
+    # Mask sensitive data before sending to Gemini
+    masked_text, original_rooms = mask_sensitive_data(text)
     
     entities_str = json_module.dumps(KNOWN_ENTITIES, indent=2)
     
@@ -229,8 +264,9 @@ Rules:
 - "label" should be a short human-readable description of the action
 - "summary" should be a friendly 1-sentence description
 - "routine_key" should be a unique snake_case identifier derived from the name
+- The user description may contain [ROOM] placeholders — use them as-is in triggers, labels, and summary
 
-User's description: "{text}"
+User's description: "{masked_text}"
 
 Respond with ONLY the JSON, no other text."""
 
@@ -258,6 +294,9 @@ Respond with ONLY the JSON, no other text."""
             if action.get('service') not in ['input_boolean/turn_on', 'input_boolean/turn_off']:
                 print(f"⚠️ Unknown service: {action.get('service')}")
                 return None
+        
+        # Unmask the parsed result before returning
+        parsed = unmask_routine_data(parsed, original_rooms)
         
         return parsed
     except json_module.JSONDecodeError as e:
