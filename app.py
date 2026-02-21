@@ -7,6 +7,8 @@ from datetime import datetime
 from google import genai
 import json as json_module
 from routines import detect_routine, get_routine, log_routine_usage, get_routine_context, add_custom_routine, remove_custom_routine, list_custom_routines, get_all_routines
+import random
+import copy
 
 load_dotenv()
 
@@ -199,34 +201,101 @@ KNOWN_ENTITIES = {
     "office light": "input_boolean.office_light"
 }
 
-def unmask_routine_data(parsed, original_rooms):
-    """Unmask [ROOM] placeholders back to original room names in routine data."""
-    import copy
+# Codename pool for privacy-safe room substitution
+ROOM_CODENAMES = [
+    "alpha", "bravo", "charlie", "delta", "echo",
+    "foxtrot", "golf", "hotel", "india", "juliet",
+    "kilo", "lima", "mike", "november", "oscar"
+]
+
+def mask_with_codenames(text):
+    """Replace room names with random codenames. Returns masked text, codename->room map, and room->codename map."""
+    masked = text
+    rooms_found = []
+    
+    rooms = ['living room', 'dining room', 'bedroom', 'kitchen', 'bathroom', 'office', 'garage']
+    for room in rooms:
+        if room in masked.lower():
+            rooms_found.append(room)
+    
+    # Assign random unique codenames
+    available = list(ROOM_CODENAMES)
+    random.shuffle(available)
+    
+    codename_to_room = {}
+    room_to_codename = {}
+    for i, room in enumerate(rooms_found):
+        codename = available[i]
+        codename_to_room[codename] = room
+        room_to_codename[room] = codename
+        masked = re.sub(re.escape(room), codename, masked, flags=re.IGNORECASE)
+    
+    # Also mask person names and times
+    masked = re.sub(r'\b([A-Z][a-z]+)\b', '[PERSON]', masked)
+    masked = re.sub(r'\d{1,2}:\d{2}', '[TIME]', masked)
+    
+    return masked, codename_to_room, room_to_codename
+
+
+def build_codename_entities(room_to_codename):
+    """Build a fake entity mapping using codenames instead of real room names."""
+    # Map real entity keys to codename versions
+    room_entity_map = {
+        "kitchen": ("kitchen light", "input_boolean.kitchen_light"),
+        "bedroom": ("bedroom light", "input_boolean.bedroom_light"),
+        "living room": ("living room light", "input_boolean.living_room_light"),
+        "bathroom": ("bathroom light", "input_boolean.bathroom_light"),
+        "office": ("office light", "input_boolean.office_light"),
+    }
+    
+    codename_entities = {}
+    codename_to_entity = {}
+    
+    for room, codename in room_to_codename.items():
+        if room in room_entity_map:
+            real_label, entity_id = room_entity_map[room]
+            fake_label = f"{codename} light"
+            codename_entities[fake_label] = entity_id
+            codename_to_entity[codename] = entity_id
+    
+    # Include unmapped entities with their real names (rooms not mentioned by user)
+    for room, (label, entity_id) in room_entity_map.items():
+        if room not in room_to_codename:
+            codename_entities[label] = entity_id
+    
+    return codename_entities
+
+
+def unmask_routine_data(parsed, codename_to_room):
+    """Replace codename placeholders back to real room names in routine data."""
     result = copy.deepcopy(parsed)
     
-    def unmask_text(text, rooms):
-        for room in rooms:
-            text = text.replace('[ROOM]', room, 1)
-        text = text.replace('[ROOM]', 'room')
+    def unmask_text(text):
+        for codename, room in codename_to_room.items():
+            text = re.sub(re.escape(codename), room, text, flags=re.IGNORECASE)
         text = text.replace('[PERSON]', 'someone')
         text = text.replace('[TIME]', 'the scheduled time')
         return text
     
     # Unmask triggers
-    result['triggers'] = [unmask_text(t, original_rooms) for t in result.get('triggers', [])]
+    result['triggers'] = [unmask_text(t) for t in result.get('triggers', [])]
     
     # Unmask summary
     if 'summary' in result:
-        result['summary'] = unmask_text(result['summary'], original_rooms)
+        result['summary'] = unmask_text(result['summary'])
     
     # Unmask short_name
     if 'short_name' in result:
-        result['short_name'] = unmask_text(result['short_name'], original_rooms)
+        result['short_name'] = unmask_text(result['short_name'])
+    
+    # Unmask routine_key
+    if 'routine_key' in result:
+        result['routine_key'] = unmask_text(result['routine_key'])
     
     # Unmask action labels
     for action in result.get('actions', []):
         if 'label' in action:
-            action['label'] = unmask_text(action['label'], original_rooms)
+            action['label'] = unmask_text(action['label'])
     
     return result
 
@@ -234,10 +303,12 @@ def unmask_routine_data(parsed, original_rooms):
 def parse_routine_with_gemini(text):
     """Use Gemini to parse a natural language routine description into structured data."""
     
-    # Mask sensitive data before sending to Gemini
-    masked_text, original_rooms = mask_sensitive_data(text)
+    # Mask with codenames so Gemini can still distinguish rooms
+    masked_text, codename_to_room, room_to_codename = mask_with_codenames(text)
     
-    entities_str = json_module.dumps(KNOWN_ENTITIES, indent=2)
+    # Build entity list using codenames
+    codename_entities = build_codename_entities(room_to_codename)
+    entities_str = json_module.dumps(codename_entities, indent=2)
     
     prompt = f"""You are a smart home assistant that creates automation routines.
 The user wants to create a new routine. Parse their description and return ONLY a JSON object.
@@ -251,8 +322,8 @@ The JSON must have this exact structure:
     "short_name": "human readable name",
     "triggers": ["trigger phrase 1", "trigger phrase 2", "trigger phrase 3"],
     "actions": [
-        {{"service": "input_boolean/turn_on", "entity_id": "input_boolean.kitchen_light", "label": "kitchen light on"}},
-        {{"service": "input_boolean/turn_off", "entity_id": "input_boolean.bedroom_light", "label": "bedroom light off"}}
+        {{"service": "input_boolean/turn_on", "entity_id": "input_boolean.kitchen_light", "label": "alpha light on"}},
+        {{"service": "input_boolean/turn_off", "entity_id": "input_boolean.bedroom_light", "label": "bravo light off"}}
     ],
     "summary": "A brief spoken summary of what this routine does."
 }}
@@ -261,10 +332,9 @@ Rules:
 - "triggers" should include the phrase the user wants to say, plus 2-3 natural variations
 - "service" must be either "input_boolean/turn_on" or "input_boolean/turn_off"
 - "entity_id" must be one of the known entities listed above
-- "label" should be a short human-readable description of the action
-- "summary" should be a friendly 1-sentence description
+- "label" should be a short human-readable description using the room codenames shown above
+- "summary" should be a friendly 1-sentence description using room codenames
 - "routine_key" should be a unique snake_case identifier derived from the name
-- The user description may contain [ROOM] placeholders — use them as-is in triggers, labels, and summary
 
 User's description: "{masked_text}"
 
@@ -295,8 +365,8 @@ Respond with ONLY the JSON, no other text."""
                 print(f"⚠️ Unknown service: {action.get('service')}")
                 return None
         
-        # Unmask the parsed result before returning
-        parsed = unmask_routine_data(parsed, original_rooms)
+        # Unmask codenames back to real room names
+        parsed = unmask_routine_data(parsed, codename_to_room)
         
         return parsed
     except json_module.JSONDecodeError as e:
