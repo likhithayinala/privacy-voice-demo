@@ -4,6 +4,7 @@ import re
 from datetime import datetime
 
 ROUTINES_LOG_FILE = os.path.join(os.path.dirname(__file__), 'routine_history.json')
+CUSTOM_ROUTINES_FILE = os.path.join(os.path.dirname(__file__), 'custom_routines.json')
 
 # Predefined routines: trigger phrases -> actions + summary
 ROUTINES = {
@@ -73,6 +74,57 @@ ROUTINES = {
 }
 
 
+def load_custom_routines():
+    """Load user-created routines from file."""
+    if os.path.exists(CUSTOM_ROUTINES_FILE):
+        try:
+            with open(CUSTOM_ROUTINES_FILE, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_custom_routines(custom):
+    """Save user-created routines to file."""
+    try:
+        with open(CUSTOM_ROUTINES_FILE, 'w') as f:
+            json.dump(custom, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ Could not save custom routines: {e}")
+
+
+def get_all_routines():
+    """Merge predefined and custom routines. Custom overrides predefined if same key."""
+    merged = dict(ROUTINES)
+    merged.update(load_custom_routines())
+    return merged
+
+
+def add_custom_routine(routine_key, routine_data):
+    """Add or update a custom routine."""
+    custom = load_custom_routines()
+    custom[routine_key] = routine_data
+    save_custom_routines(custom)
+    return True
+
+
+def remove_custom_routine(routine_key):
+    """Remove a custom routine by key."""
+    custom = load_custom_routines()
+    if routine_key in custom:
+        del custom[routine_key]
+        save_custom_routines(custom)
+        return True
+    return False
+
+
+def list_custom_routines():
+    """List all custom routine keys and names."""
+    custom = load_custom_routines()
+    return {k: v.get('short_name', k) for k, v in custom.items()}
+
+
 def detect_routine(text):
     """Check if user input matches any routine trigger. Returns routine key or None."""
     if not text:
@@ -80,7 +132,8 @@ def detect_routine(text):
     text_lower = text.lower().strip()
     text_clean = re.sub(r'[^\w\s]', '', text_lower)
 
-    for routine_key, routine in ROUTINES.items():
+    all_routines = get_all_routines()
+    for routine_key, routine in all_routines.items():
         for trigger in routine["triggers"]:
             if trigger in text_clean:
                 return routine_key
@@ -88,8 +141,9 @@ def detect_routine(text):
 
 
 def get_routine(routine_key):
-    """Get routine details by key."""
-    return ROUTINES.get(routine_key)
+    """Get routine details by key (checks both predefined and custom)."""
+    all_routines = get_all_routines()
+    return all_routines.get(routine_key)
 
 
 def log_routine_usage(routine_key):

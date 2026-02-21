@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from datetime import datetime
 from google import genai
 import json as json_module
-from routines import detect_routine, get_routine, log_routine_usage, get_routine_context
+from routines import detect_routine, get_routine, log_routine_usage, get_routine_context, add_custom_routine, remove_custom_routine, list_custom_routines, get_all_routines
 
 load_dotenv()
 
@@ -190,156 +190,178 @@ Respond with ONLY the JSON, no other text."""
         print(f"Gemini API Exception: {e}")
         return None
 
-# Main command processing endpoint
-@app.route('/process_command', methods=['POST'])
-def process_command():
+# Known entities for Gemini context
+KNOWN_ENTITIES = {
+    "kitchen light": "input_boolean.kitchen_light",
+    "bedroom light": "input_boolean.bedroom_light",
+    "living room light": "input_boolean.living_room_light",
+    "bathroom light": "input_boolean.bathroom_light",
+    "office light": "input_boolean.office_light"
+}
+
+def parse_routine_with_gemini(text):
+    """Use Gemini to parse a natural language routine description into structured data."""
+    
+    entities_str = json_module.dumps(KNOWN_ENTITIES, indent=2)
+    
+    prompt = f"""You are a smart home assistant that creates automation routines.
+The user wants to create a new routine. Parse their description and return ONLY a JSON object.
+
+Available devices and their entity_ids:
+{entities_str}
+
+The JSON must have this exact structure:
+{{
+    "routine_key": "a_snake_case_id",
+    "short_name": "human readable name",
+    "triggers": ["trigger phrase 1", "trigger phrase 2", "trigger phrase 3"],
+    "actions": [
+        {{"service": "input_boolean/turn_on", "entity_id": "input_boolean.kitchen_light", "label": "kitchen light on"}},
+        {{"service": "input_boolean/turn_off", "entity_id": "input_boolean.bedroom_light", "label": "bedroom light off"}}
+    ],
+    "summary": "A brief spoken summary of what this routine does."
+}}
+
+Rules:
+- "triggers" should include the phrase the user wants to say, plus 2-3 natural variations
+- "service" must be either "input_boolean/turn_on" or "input_boolean/turn_off"
+- "entity_id" must be one of the known entities listed above
+- "label" should be a short human-readable description of the action
+- "summary" should be a friendly 1-sentence description
+- "routine_key" should be a unique snake_case identifier derived from the name
+
+User's description: "{text}"
+
+Respond with ONLY the JSON, no other text."""
+
+    try:
+        response = client.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=prompt
+        )
+        
+        content = response.text
+        content = content.replace('```json', '').replace('```', '').strip()
+        parsed = json_module.loads(content)
+        
+        # Validate required fields
+        required = ['routine_key', 'short_name', 'triggers', 'actions', 'summary']
+        if not all(k in parsed for k in required):
+            print(f"Missing fields in Gemini response: {parsed.keys()}")
+            return None
+        
+        # Validate actions have valid entity_ids
+        valid_entities = set(KNOWN_ENTITIES.values())
+        for action in parsed['actions']:
+            if action.get('entity_id') not in valid_entities:
+                print(f"⚠️ Unknown entity: {action.get('entity_id')}, skipping validation")
+            if action.get('service') not in ['input_boolean/turn_on', 'input_boolean/turn_off']:
+                print(f"⚠️ Unknown service: {action.get('service')}")
+                return None
+        
+        return parsed
+    except json_module.JSONDecodeError as e:
+        print(f"Gemini routine parse JSON error: {e}")
+        return None
+    except Exception as e:
+        print(f"Gemini routine parse error: {e}")
+        return None
+
+
+@app.route('/create_routine', methods=['POST'])
+def create_routine():
+    """Create a new routine from natural language description."""
     data = request.json
-    original_text = data.get('text', '')
+    description = data.get('text', '')
     
-    # Check if this is a routine trigger first
-    routine_key = detect_routine(original_text)
-    if routine_key:
-        routine = get_routine(routine_key)
-        results = []
-        all_success = True
-        for action in routine["actions"]:
-            result = call_home_assistant(action["service"], action["entity_id"])
-            results.append({
-                "label": action["label"],
-                "success": result is not None
-            })
-            if result is None:
-                all_success = False
-        
-        # Log usage for pattern learning
-        log_routine_usage(routine_key)
-        context = get_routine_context(routine_key)
-        
-        # Log for dashboard
-        log_entry = {
-            'timestamp': datetime.now().strftime('%H:%M:%S'),
-            'original': original_text,
-            'masked': None,
-            'route': 'LOCAL (ROUTINE)',
-            'success': all_success
-        }
-        command_log.append(log_entry)
-        if len(command_log) > 10:
-            command_log.pop(0)
-        
+    if not description:
+        return jsonify({'success': False, 'error': 'No description provided'}), 400
+    
+    # Parse with Gemini
+    parsed = parse_routine_with_gemini(description)
+    
+    if not parsed:
         return jsonify({
-            'success': all_success,
-            'route': 'LOCAL (ROUTINE)',
-            'result': f"Executed {routine['short_name']}",
-            'routine': routine_key,
-            'routine_summary': routine['summary'],
-            'routine_actions': results,
-            'routine_context': context,
-            'room': 'multiple',
-            'action': routine['short_name'],
-            'device': 'multiple'
-        })
+            'success': False,
+            'error': 'Could not understand the routine description. Try being more specific.'
+        }), 400
     
-    # Check if this is a state query
-    if is_state_query(original_text):
-        # Extract room and get state
-        text_lower = original_text.lower()
-        entity = None
-        room = None
-        
-        if 'kitchen' in text_lower:
-            entity = 'input_boolean.kitchen_light'
-            room = 'kitchen'
-        elif 'bedroom' in text_lower:
-            entity = 'input_boolean.bedroom_light'
-            room = 'bedroom'
-        elif 'living' in text_lower:
-            entity = 'input_boolean.living_room_light'
-            room = 'living room'
-        
-        if entity:
-            state = get_device_state(entity)
-            return jsonify({
-                'success': True,
-                'route': 'LOCAL',
-                'result': 'State query',
-                'room': room,
-                'action': 'query',
-                'device': 'light',
-                'state': state.get('state') if state else 'unknown'
-            })
+    routine_key = parsed.pop('routine_key')
     
-    # Apply privacy masking
-    masked_text, rooms = mask_sensitive_data(original_text)
+    # Check for conflicts with existing triggers
+    all_routines = get_all_routines()
+    existing_triggers = {}
+    for rk, rv in all_routines.items():
+        for t in rv.get('triggers', []):
+            existing_triggers[t.lower()] = rk
     
-    # Decide routing
-    is_local = should_process_locally(original_text)
-    route = 'LOCAL' if is_local else 'CLOUD'
+    conflicts = [t for t in parsed['triggers'] if t.lower() in existing_triggers]
+    if conflicts:
+        conflicting_routine = existing_triggers[conflicts[0].lower()]
+        return jsonify({
+            'success': False,
+            'error': f"Trigger '{conflicts[0]}' conflicts with existing routine '{conflicting_routine}'."
+        }), 409
     
-    # Process command
-    if is_local:
-        parsed = parse_local_command(original_text)
-        
-        # Handle multiple entities (all lights)
-        if isinstance(parsed.get('entity_id'), list):
-            ha_response = True
-            for eid in parsed['entity_id']:
-                result = call_home_assistant(parsed['service'], eid)
-                if not result:
-                    ha_response = False
-        else:
-            ha_response = call_home_assistant(parsed['service'], parsed.get('entity_id'))
-        
-        result_text = f"Executed {parsed['service']} locally"
-    else:
-        parsed = call_gemini_api(masked_text)
-        if parsed:
-            ha_response = call_home_assistant(
-                parsed.get('service'),
-                parsed.get('entity_id'),
-                parsed.get('data')
-            )
-            result_text = f"Executed via Gemini: {parsed.get('service')}"
-        else:
-            result_text = "Failed to parse command"
-            ha_response = None
-            parsed = {}
+    # Save the routine
+    add_custom_routine(routine_key, parsed)
     
     # Log for dashboard
     log_entry = {
         'timestamp': datetime.now().strftime('%H:%M:%S'),
-        'original': original_text,
-        'masked': masked_text if not is_local else None,
-        'route': route,
-        'success': ha_response is not None
+        'original': f"[ROUTINE CREATED] {description}",
+        'masked': None,
+        'route': 'CLOUD (ROUTINE CREATION)',
+        'success': True
     }
     command_log.append(log_entry)
-    
     if len(command_log) > 10:
         command_log.pop(0)
     
     return jsonify({
-        'success': ha_response is not None,
-        'route': route,
-        'result': result_text,
-        'room': parsed.get('room'),
-        'action': parsed.get('action'),
-        'device': parsed.get('device')
+        'success': True,
+        'routine_key': routine_key,
+        'routine': parsed,
+        'message': f"Created routine '{parsed['short_name']}'. Say '{parsed['triggers'][0]}' to activate it!"
     })
+
+
+@app.route('/delete_routine', methods=['POST'])
+def delete_routine():
+    """Delete a custom routine."""
+    data = request.json
+    routine_key = data.get('routine_key', '')
+    
+    if not routine_key:
+        return jsonify({'success': False, 'error': 'No routine key provided'}), 400
+    
+    # Prevent deleting built-in routines
+    from routines import ROUTINES
+    if routine_key in ROUTINES:
+        return jsonify({'success': False, 'error': 'Cannot delete built-in routines'}), 403
+    
+    removed = remove_custom_routine(routine_key)
+    if removed:
+        return jsonify({'success': True, 'message': f"Deleted routine '{routine_key}'"})
+    else:
+        return jsonify({'success': False, 'error': 'Routine not found'}), 404
+
 
 # Routine info endpoint for dashboard
 @app.route('/api/routines')
-def get_routines():
-    from routines import ROUTINES, get_routine_context
+def get_routines_api():
+    from routines import get_all_routines, get_routine_context, ROUTINES
+    all_r = get_all_routines()
     routine_list = []
-    for key, routine in ROUTINES.items():
+    for key, routine in all_r.items():
         ctx = get_routine_context(key)
         routine_list.append({
             'key': key,
             'name': routine['short_name'],
-            'triggers': routine['triggers'][:3],  # first 3 triggers
+            'triggers': routine['triggers'][:3],
             'action_count': len(routine['actions']),
-            'context': ctx
+            'context': ctx,
+            'is_custom': key not in ROUTINES
         })
     return jsonify(routine_list)
 

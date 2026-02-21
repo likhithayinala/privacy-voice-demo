@@ -381,6 +381,30 @@ class VoiceAssistant:
         unmasked = unmasked.replace('[TIME]', 'the scheduled time')
         return unmasked
 
+    def is_routine_creation_request(self, text):
+        """Check if user wants to create a new routine."""
+        if not text:
+            return False
+        text_lower = text.lower()
+        creation_phrases = [
+            "create a routine", "new routine", "make a routine",
+            "set up a routine", "add a routine", "create routine",
+            "save a routine", "build a routine", "custom routine",
+            "when i say", "whenever i say"
+        ]
+        return any(phrase in text_lower for phrase in creation_phrases)
+
+    def is_routine_deletion_request(self, text):
+        """Check if user wants to delete a routine."""
+        if not text:
+            return False
+        text_lower = text.lower()
+        deletion_phrases = [
+            "delete routine", "remove routine", "delete the routine",
+            "remove the routine", "get rid of routine"
+        ]
+        return any(phrase in text_lower for phrase in deletion_phrases)
+
     def generate_response(self, user_input, command_result=None):
         """Generate conversational response using Gemini"""
         
@@ -392,6 +416,13 @@ class VoiceAssistant:
             if masked_command_result.get('room'):
                 masked_command_result['room'] = '[ROOM]'
         
+        # Check if this was a routine creation
+        if command_result and command_result.get('routine_created'):
+            routine_info = command_result.get('routine', {})
+            triggers = routine_info.get('triggers', [])
+            trigger_hint = f"'{triggers[0]}'" if triggers else "the trigger phrase"
+            return f"Done! I've created your {routine_info.get('short_name', 'new routine')}. Just say {trigger_hint} anytime to activate it."
+        
         # Check if this was a routine execution
         if command_result and command_result.get('routine'):
             routine_key = command_result['routine']
@@ -399,7 +430,6 @@ class VoiceAssistant:
             routine_actions = command_result.get('routine_actions', [])
             routine_context = command_result.get('routine_context')
             
-            # Build a context-aware prompt
             context_hint = ""
             if routine_context and routine_context.get('times_used', 0) > 1:
                 context_hint = f"""
@@ -429,7 +459,6 @@ Use [ROOM] as a placeholder for room names if needed."""
                 return self.unmask_sensitive_data(response.text, original_rooms)
             except Exception as e:
                 print(f"Gemini API Exception: {e}")
-                # Fall back to the pre-built summary
                 return routine_summary
         
         # Non-routine: existing logic
@@ -471,6 +500,7 @@ async def main_async():
     print("☀️  SUNDAY - Privacy-First Voice Assistant")
     print("=" * 50)
     print(f"Say '{assistant.wake_word}' to wake me up!")
+    print("Say 'create a routine' to teach me new automations!")
     print("Press Ctrl+C to quit\n")
     
     # Check if Flask app is running
@@ -499,7 +529,6 @@ async def main_async():
             greeting = "Hi! How can I help you?"
             assistant.speak_streaming(greeting)
             
-            # Small delay to let TTS audio finish before opening mic
             await asyncio.sleep(0.3)
             
             print("🎤 Listening for your command...")
@@ -514,6 +543,68 @@ async def main_async():
             
             print(f"📢 You said: {command_text}")
             
+            # Check if user wants to create a routine
+            if assistant.is_routine_creation_request(command_text):
+                print("🛠️  Routine creation mode!")
+                
+                # Check if the description is already in the command
+                # e.g., "create a routine when I say party mode turn on all lights"
+                has_inline_description = any(
+                    kw in command_text.lower() 
+                    for kw in ["when i say", "whenever i say", "called"]
+                )
+                
+                if has_inline_description:
+                    description = command_text
+                else:
+                    assistant.speak_streaming("Sure! Describe your routine. For example, say: when I say party mode, turn on the living room and kitchen lights.")
+                    await asyncio.sleep(0.3)
+                    
+                    print("🎤 Listening for routine description...")
+                    description = await assistant.listen_for_command(max_duration=10)
+                    
+                    if not description or not description.strip():
+                        assistant.speak_streaming("I didn't catch that. Let's try again later.")
+                        print()
+                        continue
+                    
+                    print(f"📝 Routine description: {description}")
+                
+                # Send to Flask for Gemini-powered creation
+                if flask_available:
+                    try:
+                        resp = requests.post(
+                            'http://localhost:5000/create_routine',
+                            json={'text': description},
+                            timeout=15
+                        )
+                        
+                        if resp.status_code == 200:
+                            result = resp.json()
+                            command_result = {
+                                'routine_created': True,
+                                'routine': result.get('routine', {}),
+                                'message': result.get('message', '')
+                            }
+                            response_text = assistant.generate_response(command_text, command_result)
+                            print(f"✅ {result.get('message')}")
+                        elif resp.status_code == 409:
+                            result = resp.json()
+                            response_text = f"Oops, {result.get('error', 'that trigger conflicts with an existing routine.')}. Try a different trigger phrase."
+                        else:
+                            result = resp.json()
+                            response_text = result.get('error', "I couldn't create that routine. Could you try describing it differently?")
+                    except Exception as e:
+                        print(f"Error creating routine: {e}")
+                        response_text = "I had trouble creating that routine. Please try again."
+                else:
+                    response_text = "I need the backend running to create routines. Start it with python app.py."
+                
+                assistant.speak_streaming(response_text)
+                print()
+                continue
+            
+            # Normal command flow
             command_result = None
             if flask_available:
                 try:
